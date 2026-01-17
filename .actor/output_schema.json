@@ -1,11 +1,11 @@
 {
-    "actorSpecification": 1,
-    "views": {
+    "actorOutputSchemaVersion": 1,
+    "title": "Output schema",
+    "properties": {
         "overview": {
-            "title": "Jumia Products Overview",
-            "display": {
-                "component": "table"
-            }
+            "type": "string",
+            "title": "Overview",
+            "template": "{{links.apiDefaultDatasetUrl}}/items?view=overview"
         }
     }
 }
