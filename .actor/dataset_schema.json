@@ -1,0 +1,73 @@
+{
+  "actorSpecification": 1,
+  "fields": {},
+  "views": {
+    "overview": {
+      "title": "Overview",
+      "transformation": {
+        "fields": [
+          "name",
+          "brand",
+          "price",
+          "price_formatted",
+          "old_price",
+          "discount",
+          "rating",
+          "reviews_count",
+          "url",
+          "image_url",
+          "is_official_store"
+        ]
+      },
+      "display": {
+        "component": "table",
+        "properties": {
+          "name": {
+            "label": "Product Name",
+            "format": "text"
+          },
+          "brand": {
+            "label": "Brand",
+            "format": "text"
+          },
+          "price": {
+            "label": "Price (NGN)",
+            "format": "text"
+          },
+          "price_formatted": {
+            "label": "Price Display",
+            "format": "text"
+          },
+          "old_price": {
+            "label": "Old Price",
+            "format": "text"
+          },
+          "discount": {
+            "label": "Discount %",
+            "format": "text"
+          },
+          "rating": {
+            "label": "Rating",
+            "format": "text"
+          },
+          "reviews_count": {
+            "label": "Reviews",
+            "format": "text"
+          },
+          "url": {
+            "label": "Product URL",
+            "format": "link"
+          },
+          "image_url": {
+            "label": "Image",
+            "format": "text"
+          },
+          "is_official_store": {
+            "label": "Official Store",
+            "format": "text"
+          }
+        }
+      }
+    }
+  }
+}

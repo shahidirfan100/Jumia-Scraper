@@ -1,0 +1,11 @@
+{
+    "actorSpecification": 1,
+    "views": {
+        "overview": {
+            "title": "Jumia Products Overview",
+            "display": {
+                "component": "table"
+            }
+        }
+    }
+}
