@@ -1,4 +1,4 @@
-// Jumia Nigeria Products Scraper - JSON Extraction from window.__STORE__
+// Jumia Nigeria Products Scraper
 import { Actor, log } from 'apify';
 import { CheerioCrawler, Dataset } from 'crawlee';
 import { HeaderGenerator } from 'header-generator';
@@ -18,7 +18,7 @@ async function main() {
         const PRODUCTS_PER_PAGE = 40;
         const maxPages = Math.ceil(RESULTS_WANTED / PRODUCTS_PER_PAGE) + 1;
 
-        log.info(`Starting Jumia scraper: ${start_url}, results_wanted: ${RESULTS_WANTED}`);
+        log.info(`Starting scraper | URL: ${start_url} | Target: ${RESULTS_WANTED} products`);
 
         // Initialize header generator for stealth
         const headerGenerator = new HeaderGenerator({
@@ -39,10 +39,7 @@ async function main() {
         let saved = 0;
         const seen = new Set();
 
-        /**
-         * Extract products from window.__STORE__ JSON embedded in HTML
-         * This is MUCH faster and more reliable than HTML parsing
-         */
+        // Primary extraction method
         function extractProductsFromStore(html) {
             // Method 1: Look for __STORE__ assignment
             const storePatterns = [
@@ -56,7 +53,6 @@ async function main() {
                     try {
                         const store = JSON.parse(match[1]);
                         if (store.products && Array.isArray(store.products)) {
-                            log.info(`Found ${store.products.length} products in __STORE__`);
                             return store.products;
                         }
                     } catch (e) {
@@ -68,9 +64,7 @@ async function main() {
             return null;
         }
 
-        /**
-         * Extract products from data-ga4 attributes (fallback)
-         */
+        // Fallback extraction method
         function extractProductsFromHtml($) {
             const products = [];
 
@@ -229,21 +223,18 @@ async function main() {
                 const pageNo = request.userData?.pageNo || 1;
                 const html = body?.toString() || $.html();
 
-                log.info(`Processing page ${pageNo}: ${request.url}`);
+                log.info(`Processing page ${pageNo}`);
 
                 let products = [];
 
-                // PRIORITY 1: Try __STORE__ JSON extraction (fastest, most reliable)
+                // Extract products
                 const storeProducts = extractProductsFromStore(html);
                 if (storeProducts && storeProducts.length > 0) {
-                    log.info(`✅ Extracted ${storeProducts.length} products from __STORE__ JSON`);
                     products = storeProducts.map(transformStoreProduct);
                 } else {
-                    // PRIORITY 2: Fallback to HTML parsing
-                    log.info('⚠️ __STORE__ not found, falling back to HTML parsing');
                     products = extractProductsFromHtml($);
-                    log.info(`Extracted ${products.length} products from HTML`);
                 }
+                log.info(`Found ${products.length} products on page ${pageNo}`);
 
                 // Deduplicate
                 const uniqueProducts = products.filter(p => {
@@ -268,7 +259,7 @@ async function main() {
                     baseUrl.searchParams.set('page', nextPageNo.toString());
                     const nextUrl = baseUrl.href;
 
-                    log.info(`Enqueueing page ${nextPageNo}: ${nextUrl}`);
+
                     await enqueueLinks({
                         urls: [nextUrl],
                         userData: { pageNo: nextPageNo },
@@ -286,7 +277,7 @@ async function main() {
         });
 
         await crawler.run([{ url: start_url, userData: { pageNo: 1 } }]);
-        log.info(`✅ Finished. Saved ${saved} products.`);
+        log.info(`Finished | Total: ${saved} products collected`);
 
     } finally {
         await Actor.exit();
