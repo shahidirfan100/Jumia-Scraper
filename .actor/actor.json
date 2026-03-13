@@ -5,6 +5,9 @@
   "description": "Extract product data from Jumia Nigeria - prices, ratings, reviews, and more",
   "version": "1.0.0",
   "buildTag": "latest",
+  "meta": {
+    "generatedBy": "gpt-5-codex"
+  },
   "dockerfile": "../Dockerfile",
   "readme": "../README.md",
   "input": "./input_schema.json",
