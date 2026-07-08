@@ -26,7 +26,10 @@
       "description": "Proxy settings for avoiding blocks. Residential proxies are recommended for Jumia.",
       "editor": "proxy",
       "default": {
-        "useApifyProxy": false
+        "useApifyProxy": true,
+        "apifyProxyGroups": [
+          "RESIDENTIAL"
+        ]
       }
     }
   },

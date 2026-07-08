@@ -1,6 +1,24 @@
-import prettier from 'eslint-config-prettier';
+import apifyEslintConfig from '@apify/eslint-config';
 
-import apify from '@apify/eslint-config/js.js';
+const config = [
+    ...apifyEslintConfig,
+    {
+        name: 'eslint-config-override',
+        files: ['eslint.config.mjs'],
+        rules: {
+            'import-x/no-default-export': 'off',
+            'import/no-default-export': 'off',
+        },
+    },
+    {
+        name: 'jumia-project-overrides',
+        files: ['src/**/*.js', 'src/**/*.mjs'],
+        rules: {
+            'linebreak-style': 'off',
+            camelcase: 'off',
+            'no-nested-ternary': 'off',
+        },
+    },
+];
 
-// eslint-disable-next-line import/no-default-export
-export default [{ ignores: ['**/dist'] }, ...apify, prettier];
+export default config;

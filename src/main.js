@@ -1,7 +1,6 @@
-import { Actor } from 'apify';
-import log from '@apify/log';
-import { CheerioCrawler, Dataset } from 'crawlee';
-import { HeaderGenerator } from 'header-generator';
+import { Actor, log } from 'apify';
+import { Dataset } from 'crawlee';
+import { chromium } from 'patchright';
 
 const BASE_URL = 'https://www.jumia.com.ng';
 const DEFAULT_RESULTS_WANTED = 20;
@@ -41,19 +40,17 @@ const toPercent = (value) => {
 const cleanString = (value) => {
     if (value === null || value === undefined) return null;
     const text = String(value).trim();
-    return text ? text : null;
+    return text || null;
 };
 
-const compactRecord = (record) => {
-    return Object.fromEntries(
-        Object.entries(record).filter(([, value]) => {
-            if (value === null || value === undefined) return false;
-            if (typeof value === 'string' && value.trim() === '') return false;
-            if (Array.isArray(value) && value.length === 0) return false;
-            return true;
-        }),
-    );
-};
+const compactRecord = (record) => Object.fromEntries(
+    Object.entries(record).filter(([, value]) => {
+        if (value === null || value === undefined) return false;
+        if (typeof value === 'string' && value.trim() === '') return false;
+        if (Array.isArray(value) && value.length === 0) return false;
+        return true;
+    }),
+);
 
 const extractAssignedJsonObject = (source, marker) => {
     const markerIndex = source.indexOf(marker);
@@ -101,31 +98,18 @@ const extractAssignedJsonObject = (source, marker) => {
     return null;
 };
 
-const getStoreProducts = (html, $) => {
-    const scriptSources = [];
+const getStoreProducts = (html) => {
+    if (!html.includes('__STORE__')) return [];
 
-    if ($) {
-        $('script').each((_, el) => {
-            const scriptText = $(el).html() || '';
-            if (scriptText.includes('__STORE__')) scriptSources.push(scriptText);
-        });
-    }
+    for (const marker of ['window.__STORE__', '__STORE__']) {
+        const jsonText = extractAssignedJsonObject(html, marker);
+        if (!jsonText) continue;
 
-    if (scriptSources.length === 0 && html.includes('__STORE__')) {
-        scriptSources.push(html);
-    }
-
-    for (const source of scriptSources) {
-        for (const marker of ['window.__STORE__', '__STORE__']) {
-            const jsonText = extractAssignedJsonObject(source, marker);
-            if (!jsonText) continue;
-
-            try {
-                const store = JSON.parse(jsonText);
-                if (Array.isArray(store?.products)) return store.products;
-            } catch (error) {
-                log.debug(`Failed parsing __STORE__ JSON: ${error.message}`);
-            }
+        try {
+            const store = JSON.parse(jsonText);
+            if (Array.isArray(store?.products)) return store.products;
+        } catch {
+            // continue
         }
     }
 
@@ -171,31 +155,32 @@ const mapStoreProduct = (product) => {
     return cleaned;
 };
 
-const extractProductsFromHtmlFallback = ($) => {
+const dedupeKey = (record) => {
+    if (record.sku) return `sku:${record.sku.toLowerCase()}`;
+    if (record.url) return `url:${record.url.toLowerCase()}`;
+    return `hash:${JSON.stringify(record)}`;
+};
+
+const extractProductsFromHtmlContent = ($) => {
+    if (!$) return [];
     const products = [];
 
     $('article.prd').each((_, el) => {
         const $el = $(el);
         const $link = $el.find('a.core');
 
-        const priceText = cleanString($el.find('div.prc').text());
-        const oldPriceText = cleanString($el.find('div.old').text());
-        const discountText = cleanString($el.find('div.bdg._dsct').text());
-        const ratingText = cleanString($el.find('div.stars').text());
-        const reviewsText = cleanString($el.find('div.rev').text());
-
         const record = compactRecord({
             name: cleanString($link.attr('data-ga4-item_name')) || cleanString($el.find('h3.name').text()),
             sku: cleanString($link.attr('data-ga4-item_id')),
             brand: cleanString($link.attr('data-ga4-item_brand')),
-            price: toNumber($link.attr('data-ga4-price') || priceText),
-            price_formatted: priceText,
-            old_price: toNumber(oldPriceText),
-            old_price_formatted: oldPriceText,
-            discount: toPercent(discountText),
-            discount_formatted: discountText,
-            rating: toNumber(ratingText),
-            reviews_count: toInteger(reviewsText),
+            price: toNumber($link.attr('data-ga4-price') || $el.find('div.prc').text()),
+            price_formatted: cleanString($el.find('div.prc').text()),
+            old_price: toNumber($el.find('div.old').text()),
+            old_price_formatted: cleanString($el.find('div.old').text()),
+            discount: toPercent($el.find('div.bdg._dsct').text()),
+            discount_formatted: cleanString($el.find('div.bdg._dsct').text()),
+            rating: toNumber($el.find('div.stars').text()),
+            reviews_count: toInteger($el.find('div.rev').text()),
             url: toAbsoluteUrl($link.attr('href')),
             image_url: cleanString($el.find('img.img').attr('data-src') || $el.find('img.img').attr('src')),
             is_official_store: $el.find('div.bdg._mall').length > 0,
@@ -206,12 +191,6 @@ const extractProductsFromHtmlFallback = ($) => {
     });
 
     return products;
-};
-
-const dedupeKey = (record) => {
-    if (record.sku) return `sku:${record.sku.toLowerCase()}`;
-    if (record.url) return `url:${record.url.toLowerCase()}`;
-    return `hash:${JSON.stringify(record)}`;
 };
 
 await Actor.init();
@@ -229,80 +208,109 @@ async function main() {
         : DEFAULT_RESULTS_WANTED;
     const maxPages = Math.ceil(resultsWanted / PRODUCTS_PER_PAGE_ESTIMATE) + 2;
 
-    log.info(`Starting scraper | URL: ${start_url} | Target: ${resultsWanted} products`);
+    log.info(`Starting Patchright Chrome | URL: ${start_url} | Target: ${resultsWanted} products`);
 
-    const headerGenerator = new HeaderGenerator({
-        browsers: [
-            { name: 'chrome', minVersion: 120, maxVersion: 130 },
-            { name: 'firefox', minVersion: 115, maxVersion: 125 },
-        ],
-        devices: ['desktop'],
-        operatingSystems: ['windows', 'macos'],
-        locales: ['en-US', 'en'],
-    });
+    const isApifyCloud = Actor.isAtHome();
+    const shouldUseApifyProxy = Boolean(proxyConfiguration?.useApifyProxy);
+    const hasCustomProxyUrls = Array.isArray(proxyConfiguration?.proxyUrls) && proxyConfiguration.proxyUrls.length > 0;
 
-    const proxyConf = proxyConfiguration
-        ? await Actor.createProxyConfiguration({ ...proxyConfiguration })
-        : undefined;
+    let proxyConf;
+    if (proxyConfiguration && hasCustomProxyUrls) {
+        proxyConf = await Actor.createProxyConfiguration({ ...proxyConfiguration });
+    } else if (proxyConfiguration && shouldUseApifyProxy && isApifyCloud) {
+        proxyConf = await Actor.createProxyConfiguration({ ...proxyConfiguration });
+    } else if (shouldUseApifyProxy && !isApifyCloud) {
+        log.info('Local run: ignoring Apify Proxy setting, running without proxy.');
+    }
 
     let saved = 0;
     const seen = new Set();
 
-    const crawler = new CheerioCrawler({
-        proxyConfiguration: proxyConf,
-        maxRequestRetries: 5,
-        useSessionPool: true,
-        sessionPoolOptions: {
-            maxPoolSize: 50,
-            sessionOptions: {
-                maxUsageCount: 10,
-                maxErrorScore: 3,
-            },
-        },
-        maxConcurrency: 3,
-        requestHandlerTimeoutSecs: 60,
-        preNavigationHooks: [
-            async ({ request }) => {
-                const headers = headerGenerator.getHeaders({
-                    operatingSystems: ['windows'],
-                    browsers: ['chrome'],
-                    devices: ['desktop'],
-                    locales: ['en-US'],
+    let browserProxyUrl;
+    try {
+        browserProxyUrl = proxyConf ? await proxyConf.newUrl() : undefined;
+    } catch (err) {
+        log.warning(`Failed to get proxy URL: ${err.message}, running without proxy`);
+    }
+
+    let proxyArg;
+    if (browserProxyUrl) {
+        try {
+            const parsed = new URL(browserProxyUrl);
+            proxyArg = {
+                server: `${parsed.protocol}//${parsed.host}`,
+                username: decodeURIComponent(parsed.username),
+                password: decodeURIComponent(parsed.password),
+            };
+        } catch {
+            proxyArg = { server: browserProxyUrl };
+        }
+    }
+
+    const userDataDir = process.env.APIFY_LOCAL_STORAGE_DIR
+        ? `${process.env.APIFY_LOCAL_STORAGE_DIR}/chrome-data`
+        : './chrome-data';
+
+    const browserContext = await chromium.launchPersistentContext(userDataDir, {
+        channel: 'chrome',
+        headless: false,
+        noViewport: true,
+        proxy: proxyArg,
+    });
+
+    try {
+        const page = await browserContext.newPage();
+
+        let currentUrl = start_url;
+        let pageNo = 1;
+
+        while (saved < resultsWanted && pageNo <= maxPages) {
+            log.info(`Loading page ${pageNo}: ${currentUrl}`);
+
+            try {
+                await page.goto(currentUrl, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 120000,
                 });
+            } catch (err) {
+                log.warning(`Navigation issue on page ${pageNo}: ${err.message}`);
+            }
 
-                request.headers = {
-                    ...headers,
-                    'sec-ch-ua': '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
-                    'sec-ch-ua-mobile': '?0',
-                    'sec-ch-ua-platform': '"Windows"',
-                    'sec-ch-ua-platform-version': '"15.0.0"',
-                    'sec-fetch-dest': 'document',
-                    'sec-fetch-mode': 'navigate',
-                    'sec-fetch-site': 'none',
-                    'sec-fetch-user': '?1',
-                    'upgrade-insecure-requests': '1',
-                    accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                    'accept-language': 'en-US,en;q=0.9',
-                    'accept-encoding': 'gzip, deflate, br',
-                    'cache-control': 'max-age=0',
-                };
+            await page.waitForTimeout(5000);
 
-                const delayMs = Math.random() * 2000 + 1000;
-                await new Promise((resolve) => setTimeout(resolve, delayMs));
-            },
-        ],
-        async requestHandler({ request, $, body, enqueueLinks }) {
-            const pageNo = request.userData?.pageNo || 1;
-            const html = body?.toString() || $.html();
+            let title = await page.title();
+            log.info(`Page ${pageNo} title="${title}"`);
 
-            log.info(`Processing page ${pageNo}`);
+            let attempts = 0;
+            while (title.includes('Just a moment') || title.includes('challenge') || title.includes('Attention') || title.includes('Verify')) {
+                attempts++;
+                if (attempts > 30) {
+                    log.warning(`Challenge not resolved after 60s on page ${pageNo}`);
+                    break;
+                }
+                await page.waitForTimeout(2000);
+                title = await page.title();
+            }
 
-            const storeProducts = getStoreProducts(html, $);
-            let mapped = storeProducts.map(mapStoreProduct).filter(Boolean);
-            let source = '__STORE__';
+            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+            await page.waitForTimeout(2000);
+
+            const html = await page.content();
+            log.info(`Page ${pageNo} HTML length: ${html.length}`);
+
+            let mapped = [];
+            let source = 'none';
+
+            const storeProducts = getStoreProducts(html);
+            if (storeProducts.length > 0) {
+                mapped = storeProducts.map(mapStoreProduct).filter(Boolean);
+                source = `__STORE__ (${storeProducts.length} raw)`;
+            }
 
             if (mapped.length === 0) {
-                mapped = extractProductsFromHtmlFallback($);
+                const cheerio = await import('cheerio');
+                const $ = cheerio.load(html);
+                mapped = extractProductsFromHtmlContent($);
                 source = 'HTML fallback';
             }
 
@@ -326,25 +334,18 @@ async function main() {
             }
 
             if (saved < resultsWanted && pageNo < maxPages) {
-                const nextPageNo = pageNo + 1;
-                const nextUrl = new URL(start_url);
-                nextUrl.searchParams.set('page', String(nextPageNo));
-
-                await enqueueLinks({
-                    urls: [nextUrl.href],
-                    userData: { pageNo: nextPageNo },
-                });
+                pageNo++;
+                const nextUrlObj = new URL(currentUrl);
+                nextUrlObj.searchParams.set('page', String(pageNo));
+                currentUrl = nextUrlObj.href;
+            } else {
+                break;
             }
+        }
+    } finally {
+        await browserContext.close();
+    }
 
-            const browseDelayMs = Math.random() * 2000 + 1000;
-            await new Promise((resolve) => setTimeout(resolve, browseDelayMs));
-        },
-        failedRequestHandler({ request }, error) {
-            log.error(`Request failed: ${request.url} - ${error.message}`);
-        },
-    });
-
-    await crawler.run([{ url: start_url, userData: { pageNo: 1 } }]);
     log.info(`Finished | Total: ${saved} products collected`);
     await Actor.exit();
 }

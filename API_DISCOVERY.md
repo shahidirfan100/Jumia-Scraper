@@ -3,76 +3,46 @@
 Target domain: `www.jumia.com.ng`
 Target path tested: `/android-phones/`
 
+### API Discovery Results
+
+**All HTTP-based API approaches blocked by Cloudflare (403).**
+Tested: `gotScraping` with desktop, iOS Safari, Android app headers, all returning Cloudflare JS challenge.
+
+**URLScan.io** scans also return 403 (Cloudflare blocks scanning).
+
+**Final approach: Patchright Chrome (non-headless) with `window.__STORE__.products` extraction.**
+
+### Browser Stealth Evaluation
+
+| Approach | Result |
+|----------|--------|
+| `gotScraping` (any headers) | 403 Cloudflare |
+| Playwright Firefox (headless) | 403 Cloudflare |
+| Playwright Firefox (non-headless) | 403 Cloudflare |
+| Patchright Chrome (headless) | 403 Cloudflare |
+| **Patchright Chrome (non-headless, `channel: 'chrome'`)** | **✅ Bypassed Cloudflare** |
+
 ### Existing Actor Audit
-Current output fields (before rewrite):
+Current output fields (after rewrite - 24 fields):
 
-- `name`
-- `sku`
-- `brand`
-- `price`
-- `price_formatted`
-- `old_price`
-- `old_price_formatted`
-- `discount`
-- `rating`
-- `reviews_count`
-- `url`
-- `image_url`
-- `is_official_store`
-- `has_express_shipping`
+- `name`, `sku`, `brand`, `seller_id`
+- `price`, `price_formatted`, `old_price`, `old_price_formatted`
+- `discount`, `discount_formatted`, `rating`, `reviews_count`
+- `url`, `image_url`
+- `is_official_store`, `has_express_shipping`, `is_sponsored`, `is_buyable`
+- `selected_variation`, `category_key`, `brand_key`
+- `campaign_name`, `campaign_tag`, `last_modified`
 
-Missing high-value fields:
+Missing high-value fields (from `__STORE__` but not in current data):
 
-- `seller_id`
-- `is_sponsored`
-- `is_buyable`
-- `category_key`
-- `brand_key`
-- `selected_variation`
-- `campaign_name`
-- `campaign_tag`
-- `discount_message`
-- `last_modified`
+- `discount_message` (`product.discounts.cpr.name`) - not present in scraped products
 
-### Candidate Endpoints Found
+### Selected Extraction Method
 
-1. `GET /fragment/sp/products/provider/mirakl/catalog-page-types/category/...`
-   - No auth required
-   - Has pagination params (`page`, `numberItems`)
-   - Returns HTML fragment with embedded JSON in attributes
-   - Limitation: returns sponsored block content and repeats items across pages, so not reliable as primary catalog source
-
-2. `GET /android-phones/?page=<N>`
-   - No auth required
-   - Pagination via `page` query parameter
-   - Full catalog data exposed in `window.__STORE__.products` structured JSON on each page
-   - Richer and stable for complete category extraction
-
-### Score Summary (Per Skill Rubric)
-
-- Candidate 1 score: `45`
-  - JSON directly: `0`
-  - >15 fields: `+25`
-  - No auth: `+20`
-  - Pagination: `+15`
-  - Matches/extents current fields: `+10`
-  - Quality penalty (sponsored-only, repeated results): `-25`
-
-- Candidate 2 score: `80` (structured JSON fallback path)
-  - JSON directly: `0` (embedded store object, not separate JSON API)
-  - >15 fields: `+25`
-  - No auth: `+20`
-  - Pagination: `+15`
-  - Matches/extents current fields: `+10`
-  - Full catalog coverage and stable extraction: `+10`
-
-## Selected API
-
-- Endpoint: `https://www.jumia.com.ng/<category>/?page=<N>`
-- Method: `GET`
-- Auth: `None`
-- Pagination: `page` query parameter
-- Extraction target: `window.__STORE__.products`
-- Fields available: `sku`, `name`, `displayName`, `brand`, `sellerId`, `prices.*`, `rating.*`, `url`, `image`, `isSponsored`, `isShopExpress`, `selectedVariation`, `tracking.*`, `badges.*`, `discounts.*`, `lastModified`
-- Fields currently missing in actor (now added): `seller_id`, `is_sponsored`, `is_buyable`, `category_key`, `brand_key`, `selected_variation`, `campaign_name`, `campaign_tag`, `discount_message`, `last_modified`
-- Field count: `~24` extracted fields vs `14` previously
+- **Method**: Patchright Chrome browser automation (non-headless)
+- **Docker image**: `apify/actor-node-playwright-chrome:22`
+- **Data source**: `window.__STORE__.products` embedded JSON
+- **Fallback**: Cheerio HTML parsing from `article.prd` elements
+- **Pagination**: `?page=N` query parameter
+- **Fields extracted**: 24 (vs 14 originally)
+- **Anti-bot**: Patchright C++ level stealth patches + non-headless Chrome + `channel: 'chrome'` (real Chrome binary)

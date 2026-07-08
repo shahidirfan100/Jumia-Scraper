@@ -1,15 +1,16 @@
 # Jumia Nigeria Products Scraper
 
-Extract comprehensive product data from Jumia Nigeria, Africa's largest e-commerce platform. Collect prices, ratings, reviews, discounts, brands, and images at scale. Perfect for market research, price monitoring, and competitive analysis.
+Extract comprehensive product data from Jumia Nigeria, Africa's largest e-commerce platform. Collect prices, ratings, reviews, discounts, brands, seller information, and images at scale. Perfect for market research, price monitoring, and competitive analysis.
 
 ## Features
 
-- **Complete Product Data** — Extract names, prices, ratings, reviews, and images
+- **Richer Product Data** — Extract 24+ fields including seller info, campaign badges, and stock status
 - **Price Tracking** — Get current prices, old prices, and discount percentages
-- **Brand Information** — Identify product brands and official store badges
+- **Seller & Brand Intelligence** — Identify sellers, brands, and official store badges
+- **Campaign Detection** — Capture promotional campaigns and discount messages
 - **Automatic Pagination** — Seamlessly collect data across multiple pages
 - **Flexible Input** — Scrape any Jumia Nigeria category or search results
-- **Fast & Reliable** — Automated data collection with built-in error handling
+- **Anti-Block Technology** — Built-in stealth measures for reliable data collection
 
 ## Use Cases
 
@@ -49,17 +50,27 @@ Each item in the dataset contains:
 | `name` | String | Product name and title |
 | `sku` | String | Unique product identifier |
 | `brand` | String | Product brand name |
+| `seller_id` | String | Seller/merchant identifier |
 | `price` | Number | Current price in NGN |
 | `price_formatted` | String | Formatted price with currency symbol |
 | `old_price` | Number | Original price before discount |
 | `old_price_formatted` | String | Formatted old price |
 | `discount` | Number | Discount percentage |
+| `discount_formatted` | String | Formatted discount with % symbol |
 | `rating` | Number | Product rating (1-5 scale) |
 | `reviews_count` | Number | Total number of reviews |
 | `url` | String | Direct link to product page |
 | `image_url` | String | Product image URL |
 | `is_official_store` | Boolean | Whether sold by official store |
 | `has_express_shipping` | Boolean | Express shipping availability |
+| `is_sponsored` | Boolean | Whether product is a sponsored listing |
+| `is_buyable` | Boolean | Whether product is available for purchase |
+| `selected_variation` | String | Selected product variation ID |
+| `category_key` | String | Category identifier |
+| `brand_key` | String | Normalized brand key |
+| `campaign_name` | String | Active campaign/promotion name |
+| `campaign_tag` | String | Campaign type tag |
+| `last_modified` | String | Last modification timestamp |
 
 ---
 
@@ -119,20 +130,28 @@ For reliable results with residential proxies:
 
 ```json
 {
-    "name": "XIAOMI REDMI A5 - 6.88\" 4GB RAM/128GB ROM -- BLACK",
-    "sku": "XI363MP6WUM8WNAFAMZ",
-    "brand": "XIAOMI",
-    "price": 124926,
-    "price_formatted": "₦ 124,926",
-    "old_price": 131172,
-    "old_price_formatted": "₦ 131,172",
-    "discount": 5,
+    "name": "Samsung Galaxy A06 6.7\" 4GB RAM/64GB ROM Android 14 - Black",
+    "sku": "SA948MP7KVUNENAFAMZ",
+    "brand": "Samsung",
+    "seller_id": "339709",
+    "price": 118960,
+    "price_formatted": "₦ 118,960",
+    "old_price": 127518,
+    "old_price_formatted": "₦ 127,518",
+    "discount": 7,
+    "discount_formatted": "7%",
     "rating": 4.1,
-    "reviews_count": 1678,
-    "url": "https://www.jumia.com.ng/xiaomi-redmi-a5-408237971.html",
-    "image_url": "https://ng.jumia.is/unsafe/fit-in/300x300/filters:fill(white)/product/17/9732804/1.jpg",
+    "reviews_count": 404,
+    "url": "https://www.jumia.com.ng/samsung-galaxy-a06-6.7-4gb-ram64gb-rom-android-14-black-401614385.html",
+    "image_url": "https://ng.jumia.is/unsafe/fit-in/300x300/filters:fill(white)/product/58/3416104/1.jpg?8232",
     "is_official_store": true,
-    "has_express_shipping": false
+    "has_express_shipping": true,
+    "is_sponsored": false,
+    "is_buyable": true,
+    "selected_variation": "SA948MP7KVUNENAFAMZ-701044225",
+    "category_key": "android-phones",
+    "brand_key": "samsung",
+    "last_modified": "1778588310"
 }
 ```
 
