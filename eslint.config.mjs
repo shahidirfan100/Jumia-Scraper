@@ -8,6 +8,7 @@ const config = [
         rules: {
             'import-x/no-default-export': 'off',
             'import/no-default-export': 'off',
+            'linebreak-style': 'off',
         },
     },
     {

@@ -1,20 +1,29 @@
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { Actor, log } from 'apify';
-import { Dataset } from 'crawlee';
+import extract from 'extract-zip';
 import { chromium } from 'patchright';
 
 const BASE_URL = 'https://www.jumia.com.ng';
 const DEFAULT_RESULTS_WANTED = 20;
-const PRODUCTS_PER_PAGE_ESTIMATE = 40;
+const MAX_API_PRODUCTS = 36;
+const PATCHRIGHT_TIMEOUT_MILLIS = 60_000;
+const NOPECHA_TIMEOUT_MILLIS = 150_000;
+const NOPECHA_VERSION = '0.6.1';
+const NOPECHA_URL = `https://github.com/NopeCHALLC/nopecha-extension/releases/download/${NOPECHA_VERSION}/chromium_automation.zip`;
+const API_PATH_MARKER = '/fragment/sp/products/provider/';
 
-const toAbsoluteUrl = (href, base = BASE_URL) => {
-    if (!href) return null;
-    try {
-        const url = new URL(href, base);
-        url.hash = '';
-        return url.href;
-    } catch {
-        return null;
-    }
+const cleanString = (value) => {
+    if (value === null || value === undefined) return null;
+    const text = String(value).trim();
+    return text || null;
+};
+
+const cleanStringArray = (value) => {
+    if (!Array.isArray(value)) return [];
+    return [...new Set(value.map(cleanString).filter(Boolean))];
 };
 
 const toNumber = (value) => {
@@ -27,8 +36,8 @@ const toNumber = (value) => {
 };
 
 const toInteger = (value) => {
-    const num = toNumber(value);
-    return num === null ? null : Math.trunc(num);
+    const number = toNumber(value);
+    return number === null ? null : Math.trunc(number);
 };
 
 const toPercent = (value) => {
@@ -37,10 +46,15 @@ const toPercent = (value) => {
     return match ? Number.parseFloat(match[0]) : null;
 };
 
-const cleanString = (value) => {
-    if (value === null || value === undefined) return null;
-    const text = String(value).trim();
-    return text || null;
+const toAbsoluteUrl = (href) => {
+    if (!href) return null;
+    try {
+        const url = new URL(href, BASE_URL);
+        url.hash = '';
+        return url.href;
+    } catch {
+        return null;
+    }
 };
 
 const compactRecord = (record) => Object.fromEntries(
@@ -52,306 +66,386 @@ const compactRecord = (record) => Object.fromEntries(
     }),
 );
 
-const extractAssignedJsonObject = (source, marker) => {
-    const markerIndex = source.indexOf(marker);
-    if (markerIndex === -1) return null;
-
-    const assignIndex = source.indexOf('=', markerIndex);
-    if (assignIndex === -1) return null;
-
-    const startIndex = source.indexOf('{', assignIndex);
-    if (startIndex === -1) return null;
-
-    let depth = 0;
-    let inString = false;
-    let quote = '';
-    let escaped = false;
-
-    for (let i = startIndex; i < source.length; i++) {
-        const ch = source[i];
-
-        if (inString) {
-            if (escaped) {
-                escaped = false;
-            } else if (ch === '\\') {
-                escaped = true;
-            } else if (ch === quote) {
-                inString = false;
-            }
-            continue;
-        }
-
-        if (ch === '"' || ch === '\'') {
-            inString = true;
-            quote = ch;
-            continue;
-        }
-
-        if (ch === '{') depth++;
-        if (ch === '}') depth--;
-
-        if (depth === 0) {
-            return source.slice(startIndex, i + 1);
-        }
-    }
-
-    return null;
+const mapRelatedProducts = (products) => {
+    if (!Array.isArray(products)) return [];
+    return products
+        .map((product) => compactRecord({
+            sku: cleanString(product?.sku),
+            name: cleanString(product?.name),
+            url: toAbsoluteUrl(product?.url),
+            image_url: cleanString(product?.img),
+        }))
+        .filter((product) => product.sku && product.name);
 };
 
-const getStoreProducts = (html) => {
-    if (!html.includes('__STORE__')) return [];
+const mapApiProduct = (product) => {
+    const variations = Array.isArray(product?.simples) ? product.simples : [];
+    const variationSkus = cleanStringArray(variations.map((variation) => variation?.sku));
+    const campaign = product?.badges?.campaign;
+    const mainBadge = product?.badges?.main;
+    const isOfficialStore = mainBadge?.identifier === 'JMALL'
+        || /official store/i.test(String(mainBadge?.name || ''));
 
-    for (const marker of ['window.__STORE__', '__STORE__']) {
-        const jsonText = extractAssignedJsonObject(html, marker);
-        if (!jsonText) continue;
-
-        try {
-            const store = JSON.parse(jsonText);
-            if (Array.isArray(store?.products)) return store.products;
-        } catch {
-            // continue
-        }
-    }
-
-    return [];
-};
-
-const mapStoreProduct = (product) => {
-    const isOfficialStore = product?.badges?.main?.identifier === 'JMALL'
-        || /official store/i.test(String(product?.badges?.main?.name || ''));
-
-    const record = {
+    const record = compactRecord({
         name: cleanString(product?.displayName || product?.name),
         sku: cleanString(product?.sku),
         brand: cleanString(product?.brand),
         seller_id: cleanString(product?.sellerId),
-        price: toNumber(product?.prices?.rawPrice ?? product?.prices?.price ?? product?.price),
+        categories: cleanStringArray(product?.categories),
+        tags: cleanString(product?.tags),
+        price: toNumber(product?.prices?.rawPrice ?? product?.prices?.price),
         price_formatted: cleanString(product?.prices?.price),
+        price_euro: toNumber(product?.prices?.priceEuro),
+        tax_euro: toNumber(product?.prices?.taxEuro),
         old_price: toNumber(product?.prices?.oldPrice),
         old_price_formatted: cleanString(product?.prices?.oldPrice),
+        old_price_euro: toNumber(product?.prices?.oldPriceEuro),
         discount: toPercent(product?.prices?.discount),
         discount_formatted: cleanString(product?.prices?.discount),
+        discount_euro: toNumber(product?.prices?.discountEuro),
         rating: toNumber(product?.rating?.average),
         reviews_count: toInteger(product?.rating?.totalRatings),
         url: toAbsoluteUrl(product?.url),
         image_url: cleanString(product?.image),
+        image_alt: cleanString(product?.imageAlt),
         is_official_store: isOfficialStore,
         has_express_shipping: Boolean(product?.isShopExpress || product?.shopExpress),
         is_sponsored: Boolean(product?.isSponsored),
         is_buyable: typeof product?.isBuyable === 'boolean'
             ? product.isBuyable
-            : (typeof product?.simples?.[0]?.isBuyable === 'boolean' ? product.simples[0].isBuyable : null),
+            : (typeof variations[0]?.isBuyable === 'boolean' ? variations[0].isBuyable : null),
+        is_second_chance: typeof product?.tracking?.isSecondChance === 'boolean'
+            ? product.tracking.isSecondChance
+            : null,
         selected_variation: cleanString(product?.selectedVariation),
+        variation_selection: typeof product?.variationSelection === 'boolean'
+            ? product.variationSelection
+            : null,
+        variations_count: variations.length,
+        variation_skus: variationSkus,
+        related_products: mapRelatedProducts(product?.relatedProds),
         category_key: cleanString(product?.tracking?.categoryKey),
         brand_key: cleanString(product?.tracking?.brandKey),
-        campaign_name: cleanString(product?.badges?.campaign?.name),
-        campaign_tag: cleanString(product?.badges?.campaign?.identifier),
+        campaign_name: cleanString(campaign?.name),
+        campaign_tag: cleanString(campaign?.identifier),
+        campaign_url: toAbsoluteUrl(campaign?.url),
         discount_message: cleanString(product?.discounts?.cpr?.name),
+        wishlist_added: typeof product?.wishlist?.added === 'boolean' ? product.wishlist.added : null,
         last_modified: cleanString(product?.lastModified),
-    };
-
-    const cleaned = compactRecord(record);
-    if (!cleaned.name || (!cleaned.sku && !cleaned.url)) return null;
-    return cleaned;
-};
-
-const dedupeKey = (record) => {
-    if (record.sku) return `sku:${record.sku.toLowerCase()}`;
-    if (record.url) return `url:${record.url.toLowerCase()}`;
-    return `hash:${JSON.stringify(record)}`;
-};
-
-const extractProductsFromHtmlContent = ($) => {
-    if (!$) return [];
-    const products = [];
-
-    $('article.prd').each((_, el) => {
-        const $el = $(el);
-        const $link = $el.find('a.core');
-
-        const record = compactRecord({
-            name: cleanString($link.attr('data-ga4-item_name')) || cleanString($el.find('h3.name').text()),
-            sku: cleanString($link.attr('data-ga4-item_id')),
-            brand: cleanString($link.attr('data-ga4-item_brand')),
-            price: toNumber($link.attr('data-ga4-price') || $el.find('div.prc').text()),
-            price_formatted: cleanString($el.find('div.prc').text()),
-            old_price: toNumber($el.find('div.old').text()),
-            old_price_formatted: cleanString($el.find('div.old').text()),
-            discount: toPercent($el.find('div.bdg._dsct').text()),
-            discount_formatted: cleanString($el.find('div.bdg._dsct').text()),
-            rating: toNumber($el.find('div.stars').text()),
-            reviews_count: toInteger($el.find('div.rev').text()),
-            url: toAbsoluteUrl($link.attr('href')),
-            image_url: cleanString($el.find('img.img').attr('data-src') || $el.find('img.img').attr('src')),
-            is_official_store: $el.find('div.bdg._mall').length > 0,
-            has_express_shipping: $el.find('svg.ic.xprss').length > 0,
-        });
-
-        if (record.name && (record.sku || record.url)) products.push(record);
     });
 
-    return products;
+    if (!record.name || !record.sku || !record.url || record.price === undefined) return null;
+    return record;
+};
+
+const isChallengeTitle = (title) => /just a moment|challenge|attention|verify/i.test(title);
+
+const getNopechaExtension = async () => {
+    const configuredPath = cleanString(process.env.NOPECHA_EXTENSION_PATH);
+    if (configuredPath) return path.resolve(configuredPath);
+
+    const extensionRoot = path.join(tmpdir(), `nopecha-chromium-${NOPECHA_VERSION}`);
+    const manifestPath = path.join(extensionRoot, 'manifest.json');
+
+    try {
+        await readFile(manifestPath, 'utf8');
+        return extensionRoot;
+    } catch {
+        // Download the pinned automation build below.
+    }
+
+    const archivePath = path.join(tmpdir(), `nopecha-chromium-${NOPECHA_VERSION}.zip`);
+    log.info(`Downloading NopeCHA Chromium automation extension v${NOPECHA_VERSION}`);
+    const response = await fetch(NOPECHA_URL);
+    if (!response.ok) throw new Error(`NopeCHA download failed with HTTP ${response.status}.`);
+
+    await rm(extensionRoot, { recursive: true, force: true });
+    await mkdir(extensionRoot, { recursive: true });
+    await writeFile(archivePath, Buffer.from(await response.arrayBuffer()));
+    await extract(archivePath, { dir: extensionRoot });
+    await rm(archivePath, { force: true });
+    await readFile(manifestPath, 'utf8');
+    return extensionRoot;
+};
+
+const createProxy = async (proxyConfiguration) => {
+    if (!proxyConfiguration) return undefined;
+    const hasCustomUrls = Array.isArray(proxyConfiguration.proxyUrls)
+        && proxyConfiguration.proxyUrls.length > 0;
+    if (!hasCustomUrls && proxyConfiguration.useApifyProxy && !Actor.isAtHome()) {
+        log.info('Local run: ignoring Apify Proxy setting because Apify Proxy is unavailable locally.');
+        return undefined;
+    }
+    return Actor.createProxyConfiguration(proxyConfiguration);
+};
+
+const toBrowserProxy = (proxyUrl) => {
+    if (!proxyUrl) return undefined;
+    const parsed = new URL(proxyUrl);
+    return {
+        server: `${parsed.protocol}//${parsed.host}`,
+        username: decodeURIComponent(parsed.username),
+        password: decodeURIComponent(parsed.password),
+    };
+};
+
+const waitForCatalog = async (page, timeoutMillis) => {
+    const startedAt = Date.now();
+    let title = await page.title();
+    while (isChallengeTitle(title) && Date.now() - startedAt < timeoutMillis) {
+        await page.waitForTimeout(3_000);
+        title = await page.title();
+    }
+    if (isChallengeTitle(title)) {
+        throw new Error(`Cloudflare verification did not finish within ${timeoutMillis / 1_000} seconds.`);
+    }
+    return title;
+};
+
+const discoverApiUrl = async (page, capturedRequests) => {
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    for (let attempt = 0; attempt < 20; attempt++) {
+        const captured = capturedRequests.find((url) => url.includes(API_PATH_MARKER));
+        if (captured) return captured;
+        const performanceUrl = await page.evaluate((marker) => performance
+            .getEntriesByType('resource')
+            .map((entry) => entry.name)
+            .find((url) => url.includes(marker)) || null, API_PATH_MARKER);
+        if (performanceUrl) return performanceUrl;
+        await page.waitForTimeout(500);
+    }
+    throw new Error('Jumia product API request was not observed after the catalog loaded.');
+};
+
+const getActorInput = async () => {
+    const storedInput = await Actor.getInput();
+    if (storedInput || Actor.isAtHome()) return storedInput || {};
+
+    try {
+        return JSON.parse(await readFile(path.resolve('INPUT.json'), 'utf8'));
+    } catch (error) {
+        log.debug(`Local INPUT.json was not loaded: ${error.message}`);
+        return {};
+    }
+};
+
+const getCachedApiUrl = async (startUrl, numberItems) => {
+    const metadataUrl = new URL('./api-targets.json', import.meta.url);
+    const targets = JSON.parse(await readFile(metadataUrl, 'utf8'));
+    const target = targets[startUrl.pathname];
+    if (!target?.pageType || !target?.fq) return null;
+
+    const apiUrl = new URL(
+        `/fragment/sp/products/provider/mirakl/catalog-page-types/${target.pageType}/`,
+        BASE_URL,
+    );
+    apiUrl.searchParams.set('fq', JSON.stringify(target.fq));
+    apiUrl.searchParams.set('page', '1');
+    apiUrl.searchParams.set('numberItems', String(numberItems));
+    apiUrl.searchParams.set('viewType', 'grid');
+    apiUrl.searchParams.set('returnOverride', startUrl.href);
+    apiUrl.searchParams.set('lang', 'en');
+    return apiUrl.href;
+};
+
+const launchBrowser = (userDataDir, proxy, extensionPath) => {
+    const extensionArgs = extensionPath
+        ? [`--disable-extensions-except=${extensionPath}`, `--load-extension=${extensionPath}`]
+        : [];
+
+    return chromium.launchPersistentContext(userDataDir, {
+        channel: 'chrome',
+        headless: false,
+        noViewport: true,
+        locale: 'en-US',
+        proxy,
+        args: [
+            ...extensionArgs,
+            '--disable-blink-features=AutomationControlled',
+            '--disable-dev-shm-usage',
+            '--disable-component-update',
+            '--disable-default-apps',
+            '--disable-features=OptimizationHints,MediaRouter',
+            '--disable-popup-blocking',
+            '--disable-sync',
+            '--metrics-recording-only',
+            '--no-default-browser-check',
+            '--no-first-run',
+            '--password-store=basic',
+            '--use-mock-keychain',
+        ],
+    });
+};
+
+const bootstrapCatalog = async (browserContext, startUrl, timeoutMillis) => {
+    const page = browserContext.pages()[0] || await browserContext.newPage();
+    const capturedRequests = [];
+    page.on('request', (request) => {
+        if (request.url().includes(API_PATH_MARKER)) capturedRequests.push(request.url());
+    });
+
+    await page.goto(startUrl.href, { waitUntil: 'domcontentloaded', timeout: 120_000 });
+    const title = await waitForCatalog(page, timeoutMillis);
+    log.info(`Catalog ready: ${title}`);
+    return discoverApiUrl(page, capturedRequests);
+};
+
+const waitForApiAccess = async (browserContext, apiUrl, startUrl, timeoutMillis) => {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMillis) {
+        try {
+            const response = await browserContext.request.get(apiUrl, {
+                headers: { Accept: 'application/json', Referer: startUrl.href },
+                timeout: 30_000,
+            });
+            const contentType = response.headers()['content-type'] || '';
+            if (response.ok() && contentType.includes('application/json')) {
+                const data = JSON.parse(await response.text());
+                if (Array.isArray(data?.products) && data.products.length > 0) return;
+            }
+        } catch (error) {
+            log.debug(`Product API is not ready yet: ${error.message}`);
+        }
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+    throw new Error(`Product API did not become available within ${timeoutMillis / 1_000} seconds.`);
 };
 
 await Actor.init();
 
 async function main() {
-    const input = (await Actor.getInput()) || {};
-    const { start_url, results_wanted: resultsWantedRaw = DEFAULT_RESULTS_WANTED, proxyConfiguration } = input;
+    const input = await getActorInput();
+    const {
+        start_url,
+        results_wanted: resultsWantedRaw = DEFAULT_RESULTS_WANTED,
+        proxyConfiguration,
+    } = input;
+    if (!start_url) throw new Error('Missing required input: start_url.');
 
-    if (!start_url) {
-        throw new Error('Missing required input: start_url.');
+    const startUrl = new URL(start_url);
+    if (startUrl.hostname !== 'www.jumia.com.ng' && startUrl.hostname !== 'jumia.com.ng') {
+        throw new Error('start_url must use the jumia.com.ng domain.');
     }
 
     const resultsWanted = Number.isFinite(+resultsWantedRaw)
-        ? Math.max(1, +resultsWantedRaw)
+        ? Math.max(1, Math.trunc(+resultsWantedRaw))
         : DEFAULT_RESULTS_WANTED;
-    const maxPages = Math.ceil(resultsWanted / PRODUCTS_PER_PAGE_ESTIMATE) + 2;
+    const apiLimit = Math.min(resultsWanted, MAX_API_PRODUCTS);
+    const proxy = await createProxy(proxyConfiguration);
+    const sessionId = `jumia-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    const proxyUrl = proxy ? await proxy.newUrl(sessionId) : undefined;
+    const userDataDir = path.join(
+        process.env.APIFY_LOCAL_STORAGE_DIR || path.join(tmpdir(), 'jumia-actor-storage'),
+        'patchright-profile',
+    );
 
-    log.info(`Starting Patchright Chrome | URL: ${start_url} | Target: ${resultsWanted} products`);
+    const browserProxy = toBrowserProxy(proxyUrl);
+    const cachedApiUrl = await getCachedApiUrl(startUrl, apiLimit);
+    log.info(`Starting Patchright catalog bootstrap | URL: ${startUrl.href} | Target: ${resultsWanted}`);
 
-    const isApifyCloud = Actor.isAtHome();
-    const shouldUseApifyProxy = Boolean(proxyConfiguration?.useApifyProxy);
-    const hasCustomProxyUrls = Array.isArray(proxyConfiguration?.proxyUrls) && proxyConfiguration.proxyUrls.length > 0;
-
-    let proxyConf;
-    if (proxyConfiguration && hasCustomProxyUrls) {
-        proxyConf = await Actor.createProxyConfiguration({ ...proxyConfiguration });
-    } else if (proxyConfiguration && shouldUseApifyProxy && isApifyCloud) {
-        proxyConf = await Actor.createProxyConfiguration({ ...proxyConfiguration });
-    } else if (shouldUseApifyProxy && !isApifyCloud) {
-        log.info('Local run: ignoring Apify Proxy setting, running without proxy.');
-    }
-
-    let saved = 0;
-    const seen = new Set();
-
-    let browserProxyUrl;
+    let browserContext;
+    let discoveredUrl;
     try {
-        browserProxyUrl = proxyConf ? await proxyConf.newUrl() : undefined;
-    } catch (err) {
-        log.warning(`Failed to get proxy URL: ${err.message}, running without proxy`);
-    }
+        browserContext = await launchBrowser(userDataDir, browserProxy);
+        discoveredUrl = await bootstrapCatalog(browserContext, startUrl, PATCHRIGHT_TIMEOUT_MILLIS);
+    } catch (error) {
+        log.warning(`Patchright-only bootstrap was challenged: ${error.message}`);
+        await browserContext?.close();
 
-    let proxyArg;
-    if (browserProxyUrl) {
-        try {
-            const parsed = new URL(browserProxyUrl);
-            proxyArg = {
-                server: `${parsed.protocol}//${parsed.host}`,
-                username: decodeURIComponent(parsed.username),
-                password: decodeURIComponent(parsed.password),
-            };
-        } catch {
-            proxyArg = { server: browserProxyUrl };
+        const extensionPath = await getNopechaExtension();
+        log.info(`Retrying with NopeCHA v${NOPECHA_VERSION}`);
+
+        if (cachedApiUrl) {
+            let lastError;
+            for (let attempt = 1; attempt <= 2; attempt++) {
+                const isolatedProfile = `${userDataDir}-nopecha-${Date.now()}-${attempt}`;
+                browserContext = await launchBrowser(isolatedProfile, browserProxy, extensionPath);
+                const page = browserContext.pages()[0] || await browserContext.newPage();
+                await page.goto(startUrl.href, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 120_000,
+                }).catch((navigationError) => {
+                    log.debug(`NopeCHA navigation issue: ${navigationError.message}`);
+                });
+
+                try {
+                    await waitForApiAccess(
+                        browserContext,
+                        cachedApiUrl,
+                        startUrl,
+                        NOPECHA_TIMEOUT_MILLIS / 2,
+                    );
+                    discoveredUrl = cachedApiUrl;
+                    break;
+                } catch (apiError) {
+                    lastError = apiError;
+                    await browserContext.close();
+                    browserContext = undefined;
+                    log.warning(`NopeCHA attempt ${attempt} did not unlock the API.`);
+                }
+            }
+            if (!discoveredUrl) throw lastError;
+        } else {
+            browserContext = await launchBrowser(userDataDir, browserProxy, extensionPath);
+            discoveredUrl = await bootstrapCatalog(browserContext, startUrl, NOPECHA_TIMEOUT_MILLIS);
         }
     }
 
-    const userDataDir = process.env.APIFY_LOCAL_STORAGE_DIR
-        ? `${process.env.APIFY_LOCAL_STORAGE_DIR}/chrome-data`
-        : './chrome-data';
-
-    const browserContext = await chromium.launchPersistentContext(userDataDir, {
-        channel: 'chrome',
-        headless: false,
-        noViewport: true,
-        proxy: proxyArg,
-    });
-
     try {
-        const page = await browserContext.newPage();
+        const apiUrl = new URL(discoveredUrl);
+        apiUrl.searchParams.set('numberItems', String(apiLimit));
+        apiUrl.searchParams.set('returnOverride', startUrl.href);
 
-        let currentUrl = start_url;
-        let pageNo = 1;
+        log.info(`Fetching ${apiLimit} products from Jumia's JSON service`);
+        const response = await browserContext.request.get(apiUrl.href, {
+            headers: { Accept: 'application/json', Referer: startUrl.href },
+            timeout: 60_000,
+        });
+        const contentType = response.headers()['content-type'] || '';
+        const body = await response.text();
+        if (!response.ok() || !contentType.includes('application/json')) {
+            throw new Error(
+                `Product API returned HTTP ${response.status()} (${contentType || 'unknown content type'}).`,
+            );
+        }
 
-        while (saved < resultsWanted && pageNo <= maxPages) {
-            log.info(`Loading page ${pageNo}: ${currentUrl}`);
+        let data;
+        try {
+            data = JSON.parse(body);
+        } catch {
+            throw new Error(`Product API returned malformed JSON: ${body.slice(0, 200)}`);
+        }
+        if (!Array.isArray(data?.products)) {
+            throw new Error('Product API response does not contain a products array.');
+        }
 
-            try {
-                await page.goto(currentUrl, {
-                    waitUntil: 'domcontentloaded',
-                    timeout: 120000,
-                });
-            } catch (err) {
-                log.warning(`Navigation issue on page ${pageNo}: ${err.message}`);
-            }
+        const seen = new Set();
+        const records = [];
+        for (const product of data.products) {
+            const record = mapApiProduct(product);
+            if (!record || seen.has(record.sku)) continue;
+            seen.add(record.sku);
+            records.push(record);
+            if (records.length >= resultsWanted) break;
+        }
+        if (records.length === 0) throw new Error('Product API returned no valid, unique products.');
 
-            await page.waitForTimeout(5000);
-
-            let title = await page.title();
-            log.info(`Page ${pageNo} title="${title}"`);
-
-            let attempts = 0;
-            while (title.includes('Just a moment') || title.includes('challenge') || title.includes('Attention') || title.includes('Verify')) {
-                attempts++;
-                if (attempts > 30) {
-                    log.warning(`Challenge not resolved after 60s on page ${pageNo}`);
-                    break;
-                }
-                await page.waitForTimeout(2000);
-                title = await page.title();
-            }
-
-            await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
-            await page.waitForTimeout(2000);
-
-            const html = await page.content();
-            log.info(`Page ${pageNo} HTML length: ${html.length}`);
-
-            let mapped = [];
-            let source = 'none';
-
-            const storeProducts = getStoreProducts(html);
-            if (storeProducts.length > 0) {
-                mapped = storeProducts.map(mapStoreProduct).filter(Boolean);
-                source = `__STORE__ (${storeProducts.length} raw)`;
-            }
-
-            if (mapped.length === 0) {
-                const cheerio = await import('cheerio');
-                const $ = cheerio.load(html);
-                mapped = extractProductsFromHtmlContent($);
-                source = 'HTML fallback';
-            }
-
-            log.info(`Extracted ${mapped.length} records from ${source} on page ${pageNo}`);
-
-            const unique = [];
-            for (const record of mapped) {
-                const key = dedupeKey(record);
-                if (seen.has(key)) continue;
-                seen.add(key);
-                unique.push(record);
-            }
-
-            const remaining = resultsWanted - saved;
-            const toSave = unique.slice(0, Math.max(0, remaining));
-
-            if (toSave.length > 0) {
-                await Dataset.pushData(toSave);
-                saved += toSave.length;
-                log.info(`Saved ${toSave.length} products (total: ${saved}/${resultsWanted})`);
-            }
-
-            if (saved < resultsWanted && pageNo < maxPages) {
-                pageNo++;
-                const nextUrlObj = new URL(currentUrl);
-                nextUrlObj.searchParams.set('page', String(pageNo));
-                currentUrl = nextUrlObj.href;
-            } else {
-                break;
-            }
+        await Actor.pushData(records);
+        log.info(`Saved ${records.length} unique products.`);
+        if (resultsWanted > records.length) {
+            log.warning(
+                `Requested ${resultsWanted} products, but Jumia's service returned ${records.length} unique products `
+                + `in its current ${MAX_API_PRODUCTS}-item batch. No duplicates were saved.`,
+            );
         }
     } finally {
         await browserContext.close();
     }
-
-    log.info(`Finished | Total: ${saved} products collected`);
-    await Actor.exit();
 }
 
-main().catch(async (error) => {
-    log.exception(error, 'Actor failed');
-    await Actor.fail(error);
-    process.exit(1);
-});
+main()
+    .then(() => Actor.exit())
+    .catch(async (error) => {
+        log.exception(error, 'Actor failed');
+        await Actor.fail(error);
+    });

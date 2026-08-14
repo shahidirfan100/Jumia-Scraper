@@ -1,12 +1,11 @@
 {
   "name": "jumia-nigeria-scraper",
   "version": "1.0",
-  "description": "Jumia Nigeria products scraper using Playwright Firefox with stealth extraction.",
+  "description": "Jumia Nigeria products scraper using structured product data extraction.",
   "type": "module",
   "dependencies": {
     "apify": "^3.6.0",
-    "crawlee": "^3.16.0",
-    "cheerio": "^1.2.0",
+    "extract-zip": "^2.0.1",
     "patchright": "^1.60.0"
   },
   "devDependencies": {
